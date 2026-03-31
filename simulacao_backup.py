@@ -1,5 +1,4 @@
 import os
-import math
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -22,7 +21,6 @@ TECHNOLOGIES = {
         "base_latency_ms": 4.0,
         "base_jitter_ms": 1.0,
         "base_ber": 1e-7,
-        "reference_snr_db": 18.0,
         "spectrum_ghz": 3.5,
         "network_slicing": 0.80,
         "mec_support": 0.90,
@@ -37,7 +35,6 @@ TECHNOLOGIES = {
         "base_latency_ms": 0.5,
         "base_jitter_ms": 0.1,
         "base_ber": 1e-9,
-        "reference_snr_db": 25.0,
         "spectrum_ghz": 300.0,
         "network_slicing": 0.95,
         "mec_support": 0.98,
@@ -59,45 +56,32 @@ def capacity_sites(total_demand_gbps: float, site_capacity_gbps: float) -> int:
 
 
 def estimate_performance(load_factor: float, tech_params: dict) -> tuple[float, float, float]:
-    """Estima latência, jitter e BER usando modelos de fila e de enlace.
+    """Estima latência, jitter e BER a partir do fator de carga por tecnologia.
 
-    Para latência e jitter, usamos um modelo de fila M/M/1 por site.
-    Cada site é tratado como um servidor com taxa de serviço proporcional à capacidade.
-    A latência total considera o tempo de serviço médio e o tempo de fila.
+    O modelo é simplificado, mas reflete duas ideias principais:
+    1. Cada tecnologia tem um valor base de latência/jitter/BER em carga leve.
+    2. À medida que a carga se aproxima da capacidade, os atrasos e erros crescem de forma não linear.
 
-    Para BER, usamos uma fórmula de enlace digital baseada em BPSK/QPSK:
-    BER = 0.5 * erfc(sqrt(SNR)).
-    Esse é um modelo de referência mais científico do que uma curva arbitrária.
+    A função usa tanh() para capturar a transição suave entre carga leve e carga moderada,
+    e aplica um efeito adicional quando a rede ultrapassa a capacidade (load > 1.0).
     """
-    packet_size_bits = 12_000  # pacote médio de ~1.5 kB, usado para converter capacidade em taxa de serviço
-    service_rate = tech_params["capacity_gbps"] * 1e9 / packet_size_bits
-    load = max(min(load_factor, 0.999), 0.01)
+    load = max(load_factor, 0.01)
 
-    # Tempo de serviço médio (segundos) por pacote.
-    service_time = 1.0 / service_rate
+    # Latência aumenta de modo suave com a carga, partindo do valor base.
+    latency_ms = tech_params["base_latency_ms"] * (1 + 1.5 * np.tanh(load * 1.8))
 
-    # Espera média na fila em M/M/1.
-    queue_time = service_time * load / (1.0 - load)
-    latency_ms = tech_params["base_latency_ms"] + (service_time + queue_time) * 1e3
+    # Jitter também cresce com a carga, mas pode ser mais sensível em redes congestionadas.
+    jitter_ms = tech_params["base_jitter_ms"] * (1 + 3.5 * np.tanh(load * 2.0))
 
-    # Jitter estimado como desvio padrão do tempo no sistema em M/M/1.
-    variance_sec = load / (service_rate**2 * (1.0 - load)**2)
-    jitter_ms = tech_params["base_jitter_ms"] + math.sqrt(variance_sec) * 1e3
+    # BER fica quase constante em cargas menores, mas dispara para cargas altas acima de 75%.
+    ber = tech_params["base_ber"] * (1 + 120.0 * np.maximum(0, load - 0.75) ** 1.8)
 
-    # Aplica degradação adicional se a carga ultrapassar a capacidade.
-    if load_factor >= 1.0:
-        overload = min(load_factor - 1.0, 1.0)
-        latency_ms *= 1.0 + overload * 5.0
-        jitter_ms *= 1.0 + overload * 3.0
-
-    # Modela BER pelo SNR efetivo do enlace: depende do desempenho físico e da carga.
-    ref_snr_db = tech_params.get("reference_snr_db", 20.0)
-    snr_db = ref_snr_db - 6.0 * load_factor
-    snr_linear = 10.0 ** (snr_db / 10.0)
-    ber = 0.5 * math.erfc(math.sqrt(snr_linear))
-
-    # Mantém a BER dentro de limites realistas.
-    ber = max(tech_params["base_ber"], min(ber, 1.0))
+    # Se a demanda exceder a capacidade disponível, aplicamos um fator extra de degradação.
+    if load > 1.0:
+        overload = load - 1.0
+        latency_ms *= 1 + overload * 2.5
+        jitter_ms *= 1 + overload * 2.0
+        ber *= 10 ** (overload * 0.9)
 
     return float(latency_ms), float(jitter_ms), float(ber)
 
