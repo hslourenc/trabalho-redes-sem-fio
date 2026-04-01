@@ -1,108 +1,86 @@
 import os
-import math
 import numpy as np
 import matplotlib.pyplot as plt
 
-# --- Parâmetros gerais da cidade ---
-# Estes valores representam o caso de estudo: cidade de 500.000 habitantes,
-# área urbana de 200 km², e carga média de pico definida por uma fração de usuários ativos.
-# A demanda é expressa em Mbps por usuário e usada para estimar tráfego total.
+# --- Reference-based parameters (2026 Context) ---
+# Derived from:
+# [1] Kokkinis et al. (2025) - Techno-economic modeling for 6G
+# [7] Akyildiz et al. (2020) - 6G Vision and Requirements
+# [15] Shafi et al. (2025) - Industrial Viewpoints on RAN Technologies for 6G
+# [25] Oughton et al. (2019) - Open-source techno-economic assessment (pysim5G)
+
 DEFAULT_POPULATION = 500_000
 DEFAULT_AREA_KM2 = 200
 DEFAULT_ACTIVE_RATIO = 0.1
 DEFAULT_AVG_THROUGHPUT_MBPS = 20
 
-# --- Perfis de tecnologia 5G e 6G ---
 TECHNOLOGIES = {
     "5G": {
-        "range_m": 500,  # alcance típico de uma macro-célula 5G em metros
-        "capacity_gbps": 2.0,  # capacidade agregada por site em Gbps
-        "capex_per_site": 150_000,  # CAPEX estimado por site em USD
-        "opex_per_site_year": 20_000,  # OPEX anual por site em USD
-        "base_latency_ms": 4.0,  # latência mínima de referência em ms sob baixa carga
-        "base_jitter_ms": 1.0,  # jitter mínimo de referência em ms sob baixa carga
-        "base_ber": 1e-7,  # BER base em condições ideais de enlace antes de qualquer sobrecarga
-        "spectrum_ghz": 3.5,  # banda de operação aproximada em GHz
-        "network_slicing": 0.80,  # indicador de capacidade de network slicing (0..1)
-        "mec_support": 0.90,  # indicador de suporte a MEC/edge computing (0..1)
-        "urllc_support": 0.85,  # indicador de suporte a URLLC (0..1)
-        "description": "Cobertura de macro-células 5G com desempenho equilibrado para mobilidade urbana.",
+        "range_m": 596,  # Ref [15, 24] - Urban macro coverage at 3.5GHz (179 sites for 200km2)
+        "capacity_gbps": 2.0,  # Ref [13, 24] - Typical aggregate site capacity
+        "capex_per_site": 150_000,  # Ref [1, 25] - Standard Macro-BS CAPEX
+        "opex_per_site_year": 20_000,  # Ref [1, 25] - Standard Macro-BS OPEX
+        "base_latency_ms": 4.0,  # Ref [4, 15] - Commercial 5G urban latency
+        "base_jitter_ms": 1.0,   # Ref [23] - Industrial KPI for 5G
+        "base_ber": 1e-5,        # Ref [13, 15] - Reliability 99.999%
+        "spectrum_ghz": 3.5,
+        "network_slicing": 0.80,
+        "mec_support": 0.90,
+        "urllc_support": 0.85,
+        "description": "5G macro-cell urban coverage.",
     },
     "6G": {
-        "range_m": 150,  # alcance típico de uma célula 6G de alta densidade em metros
-        "capacity_gbps": 100.0,  # capacidade agregada por site em Gbps
-        "capex_per_site": 300_000,  # CAPEX estimado por site em USD
-        "opex_per_site_year": 40_000,  # OPEX anual por site em USD
-        "base_latency_ms": 0.5,  # latência mínima de referência em ms sob baixa carga
-        "base_jitter_ms": 0.1,  # jitter mínimo de referência em ms sob baixa carga
-        "base_ber": 1e-9,  # BER base em condições ideais de enlace antes de qualquer sobrecarga
-        "spectrum_ghz": 300.0,  # banda de operação aproximada em GHz
-        "network_slicing": 0.95,  # indicador de capacidade de network slicing (0..1)
-        "mec_support": 0.98,  # indicador de suporte a MEC/edge computing (0..1)
-        "urllc_support": 0.99,  # indicador de suporte a URLLC (0..1)
-        "description": "Infraestrutura 6G de alta densidade, ultra-baixa latência e suporte a aplicações críticas.",
+        "range_m": 150,  # Ref [1, 15] - THz/Sub-THz high densification
+        "capacity_gbps": 100.0, # Ref [6, 13] - Peak rates reaching 100Gbps+
+        "capex_per_site": 300_000, # Ref [1] - Estimated 2x to 8x 5G cost (using 2x per docx)
+        "opex_per_site_year": 40_000,
+        "base_latency_ms": 0.1,  # Ref [7, 15] - 100us goal for 6G
+        "base_jitter_ms": 0.01, # Ref [7] - Microsecond precision
+        "base_ber": 1e-9,       # Ref [7, 15] - Reliability 99.9999999%
+        "spectrum_ghz": 300.0,
+        "network_slicing": 0.95,
+        "mec_support": 0.98,
+        "urllc_support": 0.99,
+        "description": "6G high-density THz infrastructure.",
     },
 }
 
-
 def coverage_sites(area_km2: float, range_m: float) -> int:
-    """Calcula o número mínimo de sites para cobertura geográfica."""
+    """Calculates minimal sites for geographic coverage (Hexagonal model)."""
+    # Using hexagonal tiling: Area of hexagon = (3 * sqrt(3) / 2) * R^2
+    # But for a simpler conservative estimate, we use circles with overlap or the Docx logic.
     site_area_km2 = np.pi * (range_m / 1000) ** 2
     return int(np.ceil(area_km2 / site_area_km2))
 
-
 def capacity_sites(total_demand_gbps: float, site_capacity_gbps: float) -> int:
-    """Calcula o número mínimo de sites para suportar a demanda de tráfego."""
+    """Calculates sites based on traffic demand."""
     return int(np.ceil(total_demand_gbps / site_capacity_gbps))
 
-
 def estimate_performance(load_factor: float, tech_params: dict) -> tuple[float, float, float]:
-    """Estima latência, jitter e BER usando modelos de fila e de carga.
-
-    Para latência e jitter, usamos um modelo de fila M/M/1 por site.
-    Cada site é tratado como um servidor com taxa de serviço proporcional à capacidade.
-    A latência total considera o tempo de serviço médio e o tempo de fila.
-
-    Para BER, o modelo atual não usa SNR físico nem valores de referência arbitrários.
-    Em vez disso, considera que a taxa de erro efetiva cresce com a carga do sistema,
-    refletindo retransmissões e degradação de qualidade quando o tráfego se aproxima da capacidade.
     """
-    packet_size_bits = 12_000  # pacote médio de ~1.5 kB, usado para converter capacidade em taxa de serviço
-    service_rate = tech_params["capacity_gbps"] * 1e9 / packet_size_bits
-    load = max(min(load_factor, 0.999), 0.01)  # evita divisão por zero e mantém o modelo M/M/1 estável
+    Estimates latency, jitter, and BER using M/M/1 Queuing Theory.
+    Model: D(rho) = D_base / (1 - rho)
+    As utilization (rho) approaches 1, delay increases hyperbolically.
+    Ref: [2] Thomas Biebricher (2023) - AI and ML Applications: 5G and 6G
+    """
+    rho = min(max(load_factor, 0.001), 0.99) # Constraint for stability
 
-    # Tempo de serviço médio (segundos) por pacote.
-    service_time = 1.0 / service_rate
+    # Latency: M/M/1 average delay model
+    # D = D_prop + D_queue -> simplified as D_base / (1-rho)
+    latency_ms = tech_params["base_latency_ms"] / (1 - rho)
 
-    # Espera média na fila em M/M/1.
-    queue_time = service_time * load / (1.0 - load)
-    latency_ms = tech_params["base_latency_ms"] + (service_time + queue_time) * 1e3
+    # Jitter: Standard deviation of delay in M/M/1
+    # J = sqrt(rho) / (mu * (1 - rho)) -> simplified as J_base * sqrt(rho) / (1-rho)
+    jitter_ms = (tech_params["base_jitter_ms"] * np.sqrt(rho)) / (1 - rho)
 
-    # Jitter estimado como desvio padrão do tempo no sistema em M/M/1.
-    variance_sec = load / (service_rate**2 * (1.0 - load)**2)
-    jitter_ms = tech_params["base_jitter_ms"] + math.sqrt(variance_sec) * 1e3
-
-    # Aplica degradação adicional se a carga ultrapassar a capacidade.
-    if load_factor >= 1.0:
-        overload = min(load_factor - 1.0, 1.0)
-        latency_ms *= 1.0 + overload * 5.0
-        jitter_ms *= 1.0 + overload * 3.0
-
-    # Modela BER diretamente como função do nível de carga.
-    # Em um sistema real, BER depende de SNR, modulação e codificação. Aqui usamos um
-    # modelo abstrato que reflete a ideia de que a taxa de erro efetiva sobe quando a
-    # rede fica congestionada e as retransmissões/interferências crescem.
-    #
-    # - 0.5: ponto de carga em que a degradação começa a aumentar.
-    # - 1.5: expoente usado para representar crescimento superlinear de BER
-    #        à medida que a carga se aproxima de capacidade máxima.
-    # - 40.0: fator de escala para que a BER relativa aumente de forma perceptível
-    #         ao passar do limiar de 50% de carga.
-    ber = tech_params["base_ber"] * (1 + 40.0 * max(0.0, load - 0.5) ** 1.5)
-    ber = max(tech_params["base_ber"], min(ber, 1.0))
+    # BER: Increases exponentially with congestion due to interference/loss
+    # Formula: BER(rho) = BER_base * 10^(k * (rho - threshold))
+    if rho > 0.75:
+        ber = tech_params["base_ber"] * 10 ** (3 * (rho - 0.75) / 0.25)
+    else:
+        ber = tech_params["base_ber"]
 
     return float(latency_ms), float(jitter_ms), float(ber)
-
 
 def simulate_network(
     tech_name: str,
@@ -111,28 +89,15 @@ def simulate_network(
     avg_throughput_mbps: float = DEFAULT_AVG_THROUGHPUT_MBPS,
     area_km2: float = DEFAULT_AREA_KM2,
 ) -> dict:
-    """Simula o desempenho de uma tecnologia celular para o cenário urbano definido."""
     tech = TECHNOLOGIES[tech_name]
-
-    # Calcula usuários ativos no pico a partir da taxa de ocupação.
     active_users = int(np.round(population * active_ratio))
-
-    # Converte a demanda total de Mbps para Gbps.
     total_demand_gbps = active_users * avg_throughput_mbps / 1000.0
 
-    # Número de sites necessários para cobrir geograficamente a área.
     num_sites_cover = coverage_sites(area_km2, tech["range_m"])
-
-    # Número de sites necessários para suportar a demanda de tráfego.
     num_sites_capacity = capacity_sites(total_demand_gbps, tech["capacity_gbps"])
-
-    # O dimensionamento final usa o maior dos dois critérios.
     num_sites = max(num_sites_cover, num_sites_capacity)
 
-    # Fator de utilização da rede: demanda / capacidade total instalada.
     load_factor = total_demand_gbps / (num_sites * tech["capacity_gbps"])
-
-    # Estima métricas de performance com base no nível de carga.
     latency_ms, jitter_ms, ber = estimate_performance(load_factor, tech)
 
     return {
@@ -158,26 +123,17 @@ def simulate_network(
         "urllc_support": tech["urllc_support"],
     }
 
-
 def simulate_hybrid(
     population: int = DEFAULT_POPULATION,
     active_ratio: float = DEFAULT_ACTIVE_RATIO,
     avg_throughput_mbps: float = DEFAULT_AVG_THROUGHPUT_MBPS,
     area_km2: float = DEFAULT_AREA_KM2,
-    dense_area_ratio: float = 0.30,
-    dense_user_ratio: float = 0.45,
+    dense_area_ratio: float = 0.30, # Hotspots in 30% of area
+    dense_user_ratio: float = 0.45, # 45% of users in these hotspots
 ) -> dict:
-    """Simula uma solução híbrida onde áreas de alta demanda recebem 6G e o resto recebe 5G.
-
-    A ideia é modelar uma cidade com hotspots densos (centro urbano) e
-    uma área mais ampla de cobertura geral. Isso permite capturar os
-    trade-offs de custo e performance entre 6G de alta densidade e 5G de
-    maior cobertura.
-    """
     dense_area = area_km2 * dense_area_ratio
     medium_area = area_km2 - dense_area
 
-    # Divide usuários ativos entre a área densa e a área média.
     total_active_users = int(np.round(population * active_ratio))
     dense_active_users = int(np.round(total_active_users * dense_user_ratio))
     medium_active_users = total_active_users - dense_active_users
@@ -222,8 +178,6 @@ def simulate_hybrid(
         "sites_6g": sites_6g,
         "sites_5g": sites_5g,
         "sites": total_sites,
-        "load_6g": float(load_6g),
-        "load_5g": float(load_5g),
         "load_factor": float(weight_dense * load_6g + weight_medium * load_5g),
         "capacity_margin": float(max(0.0, 1 - demand_total / (sites_6g * tech_6g["capacity_gbps"] + sites_5g * tech_5g["capacity_gbps"]))),
         "latency_ms": float(weight_dense * latency_6g + weight_medium * latency_5g),
@@ -241,9 +195,7 @@ def simulate_hybrid(
         "sites_5g_capacity": sites_5g_capacity,
     }
 
-
 def summary_text(result: dict) -> str:
-    """Gera texto resumido para um resultado de simulação."""
     if result["tech"] != "Hybrid":
         return (
             f"{result['tech']}: sites={result['sites']}, capex=${result['capex_usd']/1e6:.2f}M, "
@@ -258,22 +210,12 @@ def summary_text(result: dict) -> str:
         f"jitter={result['jitter_ms']:.2f}ms, ber={result['ber']:.1e}"
     )
 
-
-# A função a seguir gera gráficos comparativos para cada métrica.
-# Ela salva as figuras em ./plots/ para facilitar a análise posterior.
-def plot_sweep(
-    x_values: np.ndarray,
-    results: dict,
-    x_label: str,
-    filename: str,
-) -> None:
-    """Desenha curvas para sites, latência, jitter e BER em função de um parâmetro de entrada."""
+def plot_sweep(x_values: np.ndarray, results: dict, x_label: str, filename: str) -> None:
     os.makedirs("plots", exist_ok=True)
     fig, axs = plt.subplots(2, 2, figsize=(14, 10))
     metrics = ["sites", "latency_ms", "jitter_ms", "ber"]
     titles = ["Número de sites", "Latência média (ms)", "Jitter médio (ms)", "BER efetiva"]
     scales = ["linear", "linear", "linear", "log"]
-
     colors = {"5G": "tab:blue", "6G": "tab:orange", "Hybrid": "tab:green"}
 
     for ax, metric, title, scale in zip(axs.flatten(), metrics, titles, scales):
@@ -290,13 +232,8 @@ def plot_sweep(
     fig.savefig(os.path.join("plots", filename), dpi=180)
     plt.close(fig)
 
-
-# Executa varreduras de parâmetros de entrada para observar o comportamento
-# de 5G, 6G e híbrido conforme a demanda, a taxa de usuários ativos e a população.
 def run_sweeps() -> None:
-    """Executa simulações em faixas de tráfego, taxa de usuários ativos e população."""
     tech_names = ["5G", "6G", "Hybrid"]
-
     traffic_values = np.linspace(5, 50, 10)
     traffic_results = {tech: {"sites": [], "latency_ms": [], "jitter_ms": [], "ber": []} for tech in tech_names}
     for throughput in traffic_values:
@@ -304,7 +241,7 @@ def run_sweeps() -> None:
             result = simulate_hybrid(avg_throughput_mbps=throughput) if tech == "Hybrid" else simulate_network(tech, avg_throughput_mbps=throughput)
             for metric in traffic_results[tech]:
                 traffic_results[tech][metric].append(result[metric])
-    plot_sweep(traffic_values, traffic_results, "Demanda média por usuário (Mbps)", "traffic_sweep.png")
+    plot_sweep(traffic_values, traffic_results, "Demanda média por usuário (Mbps)", "traffic_sweep_v2.png")
 
     active_ratio_values = np.linspace(0.05, 0.20, 10)
     active_results = {tech: {"sites": [], "latency_ms": [], "jitter_ms": [], "ber": []} for tech in tech_names}
@@ -313,30 +250,16 @@ def run_sweeps() -> None:
             result = simulate_hybrid(active_ratio=active_ratio) if tech == "Hybrid" else simulate_network(tech, active_ratio=active_ratio)
             for metric in active_results[tech]:
                 active_results[tech][metric].append(result[metric])
-    plot_sweep(active_ratio_values, active_results, "Taxa de usuários ativos simultâneos", "active_ratio_sweep.png")
-
-    population_values = np.linspace(100_000, 1_000_000, 10, dtype=int)
-    population_results = {tech: {"sites": [], "latency_ms": [], "jitter_ms": [], "ber": []} for tech in tech_names}
-    for population in population_values:
-        for tech in tech_names:
-            result = simulate_hybrid(population=population) if tech == "Hybrid" else simulate_network(tech, population=population)
-            for metric in population_results[tech]:
-                population_results[tech][metric].append(result[metric])
-    plot_sweep(population_values, population_results, "População da cidade", "population_sweep.png")
-
+    plot_sweep(active_ratio_values, active_results, "Taxa de usuários ativos simultâneos", "active_ratio_sweep_v2.png")
 
 def print_comparison() -> None:
-    """Imprime um resumo comparativo das três alternativas para o caso base."""
     baseline_5g = simulate_network("5G")
     baseline_6g = simulate_network("6G")
     baseline_hybrid = simulate_hybrid()
-
-    print("--- Comparação de deployment para o caso base ---")
+    print("--- Comparação de deployment para o caso base (Ref-based) ---")
     print(summary_text(baseline_5g))
     print(summary_text(baseline_6g))
     print(summary_text(baseline_hybrid))
-    print("\nAs figuras de comportamento foram geradas em ./plots/ com variações de demanda, taxa de usuários ativos e população.")
-
 
 if __name__ == "__main__":
     print_comparison()
