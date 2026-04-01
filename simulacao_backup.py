@@ -14,31 +14,31 @@ DEFAULT_AVG_THROUGHPUT_MBPS = 20
 # --- Perfis de tecnologia 5G e 6G ---
 TECHNOLOGIES = {
     "5G": {
-        "range_m": 500,
-        "capacity_gbps": 2.0,
-        "capex_per_site": 150_000,
-        "opex_per_site_year": 20_000,
-        "base_latency_ms": 4.0,
-        "base_jitter_ms": 1.0,
-        "base_ber": 1e-7,
-        "spectrum_ghz": 3.5,
-        "network_slicing": 0.80,
-        "mec_support": 0.90,
-        "urllc_support": 0.85,
+        "range_m": 500,  # alcance estimado de uma macro-célula 5G em metros
+        "capacity_gbps": 2.0,  # capacidade agregada por site em Gbps
+        "capex_per_site": 150_000,  # CAPEX estimado por site em USD
+        "opex_per_site_year": 20_000,  # OPEX anual por site em USD
+        "base_latency_ms": 4.0,  # latência mínima de referência em ms sob baixa carga
+        "base_jitter_ms": 1.0,  # jitter mínimo de referência em ms sob baixa carga
+        "base_ber": 1e-7,  # BER base em condições ideais de enlace antes de qualquer sobrecarga
+        "spectrum_ghz": 3.5,  # banda de operação aproximada em GHz
+        "network_slicing": 0.80,  # indicador de capacidade de network slicing (0..1)
+        "mec_support": 0.90,  # indicador de suporte a MEC/edge computing (0..1)
+        "urllc_support": 0.85,  # indicador de suporte a URLLC (0..1)
         "description": "Cobertura de macro-células 5G com desempenho equilibrado para mobilidade urbana.",
     },
     "6G": {
-        "range_m": 150,
-        "capacity_gbps": 100.0,
-        "capex_per_site": 300_000,
-        "opex_per_site_year": 40_000,
-        "base_latency_ms": 0.5,
-        "base_jitter_ms": 0.1,
-        "base_ber": 1e-9,
-        "spectrum_ghz": 300.0,
-        "network_slicing": 0.95,
-        "mec_support": 0.98,
-        "urllc_support": 0.99,
+        "range_m": 150,  # alcance estimado de uma célula 6G de alta densidade em metros
+        "capacity_gbps": 100.0,  # capacidade agregada por site em Gbps
+        "capex_per_site": 300_000,  # CAPEX estimado por site em USD
+        "opex_per_site_year": 40_000,  # OPEX anual por site em USD
+        "base_latency_ms": 0.5,  # latência mínima de referência em ms sob baixa carga
+        "base_jitter_ms": 0.1,  # jitter mínimo de referência em ms sob baixa carga
+        "base_ber": 1e-9,  # BER base em condições ideais de enlace antes de qualquer sobrecarga
+        "spectrum_ghz": 300.0,  # banda de operação aproximada em GHz
+        "network_slicing": 0.95,  # indicador de capacidade de network slicing (0..1)
+        "mec_support": 0.98,  # indicador de suporte a MEC/edge computing (0..1)
+        "urllc_support": 0.99,  # indicador de suporte a URLLC (0..1)
         "description": "Infraestrutura 6G de alta densidade, ultra-baixa latência e suporte a aplicações críticas.",
     },
 }
@@ -65,18 +65,27 @@ def estimate_performance(load_factor: float, tech_params: dict) -> tuple[float, 
     A função usa tanh() para capturar a transição suave entre carga leve e carga moderada,
     e aplica um efeito adicional quando a rede ultrapassa a capacidade (load > 1.0).
     """
-    load = max(load_factor, 0.01)
+    load = max(load_factor, 0.01)  # evita divisão por zero e comportamentos indefinidos para cargas muito baixas
 
     # Latência aumenta de modo suave com a carga, partindo do valor base.
+    # - 1.5: intensidade do aumento de latência com carga.
+    # - 1.8: controla a rapidez da transição no tanh().
     latency_ms = tech_params["base_latency_ms"] * (1 + 1.5 * np.tanh(load * 1.8))
 
     # Jitter também cresce com a carga, mas pode ser mais sensível em redes congestionadas.
+    # - 3.5: fator de sensibilidade do jitter à carga.
+    # - 2.0: módulo de saturação do tanh().
     jitter_ms = tech_params["base_jitter_ms"] * (1 + 3.5 * np.tanh(load * 2.0))
 
     # BER fica quase constante em cargas menores, mas dispara para cargas altas acima de 75%.
+    # - 0.75: limiar de carga a partir do qual a perda de pacotes cresce rapidamente.
+    # - 1.8: expoente para crescimento superlinear da BER.
+    # - 120.0: fator de escala para tornar o aumento de BER perceptível.
     ber = tech_params["base_ber"] * (1 + 120.0 * np.maximum(0, load - 0.75) ** 1.8)
 
     # Se a demanda exceder a capacidade disponível, aplicamos um fator extra de degradação.
+    # A ideia é que, após saturar, a latência/jitter crescem ainda mais rápido e a BER
+    # pode escalar de forma exponencial pelo efeito de retransmissões e queda de qualidade.
     if load > 1.0:
         overload = load - 1.0
         latency_ms *= 1 + overload * 2.5

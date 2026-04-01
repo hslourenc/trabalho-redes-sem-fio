@@ -15,33 +15,31 @@ DEFAULT_AVG_THROUGHPUT_MBPS = 20
 # --- Perfis de tecnologia 5G e 6G ---
 TECHNOLOGIES = {
     "5G": {
-        "range_m": 500,
-        "capacity_gbps": 2.0,
-        "capex_per_site": 150_000,
-        "opex_per_site_year": 20_000,
-        "base_latency_ms": 4.0,
-        "base_jitter_ms": 1.0,
-        "base_ber": 1e-7,
-        "reference_snr_db": 18.0,
-        "spectrum_ghz": 3.5,
-        "network_slicing": 0.80,
-        "mec_support": 0.90,
-        "urllc_support": 0.85,
+        "range_m": 500,  # alcance típico de uma macro-célula 5G em metros
+        "capacity_gbps": 2.0,  # capacidade agregada por site em Gbps
+        "capex_per_site": 150_000,  # CAPEX estimado por site em USD
+        "opex_per_site_year": 20_000,  # OPEX anual por site em USD
+        "base_latency_ms": 4.0,  # latência mínima de referência em ms sob baixa carga
+        "base_jitter_ms": 1.0,  # jitter mínimo de referência em ms sob baixa carga
+        "base_ber": 1e-7,  # BER base em condições ideais de enlace antes de qualquer sobrecarga
+        "spectrum_ghz": 3.5,  # banda de operação aproximada em GHz
+        "network_slicing": 0.80,  # indicador de capacidade de network slicing (0..1)
+        "mec_support": 0.90,  # indicador de suporte a MEC/edge computing (0..1)
+        "urllc_support": 0.85,  # indicador de suporte a URLLC (0..1)
         "description": "Cobertura de macro-células 5G com desempenho equilibrado para mobilidade urbana.",
     },
     "6G": {
-        "range_m": 150,
-        "capacity_gbps": 100.0,
-        "capex_per_site": 300_000,
-        "opex_per_site_year": 40_000,
-        "base_latency_ms": 0.5,
-        "base_jitter_ms": 0.1,
-        "base_ber": 1e-9,
-        "reference_snr_db": 25.0,
-        "spectrum_ghz": 300.0,
-        "network_slicing": 0.95,
-        "mec_support": 0.98,
-        "urllc_support": 0.99,
+        "range_m": 150,  # alcance típico de uma célula 6G de alta densidade em metros
+        "capacity_gbps": 100.0,  # capacidade agregada por site em Gbps
+        "capex_per_site": 300_000,  # CAPEX estimado por site em USD
+        "opex_per_site_year": 40_000,  # OPEX anual por site em USD
+        "base_latency_ms": 0.5,  # latência mínima de referência em ms sob baixa carga
+        "base_jitter_ms": 0.1,  # jitter mínimo de referência em ms sob baixa carga
+        "base_ber": 1e-9,  # BER base em condições ideais de enlace antes de qualquer sobrecarga
+        "spectrum_ghz": 300.0,  # banda de operação aproximada em GHz
+        "network_slicing": 0.95,  # indicador de capacidade de network slicing (0..1)
+        "mec_support": 0.98,  # indicador de suporte a MEC/edge computing (0..1)
+        "urllc_support": 0.99,  # indicador de suporte a URLLC (0..1)
         "description": "Infraestrutura 6G de alta densidade, ultra-baixa latência e suporte a aplicações críticas.",
     },
 }
@@ -59,19 +57,19 @@ def capacity_sites(total_demand_gbps: float, site_capacity_gbps: float) -> int:
 
 
 def estimate_performance(load_factor: float, tech_params: dict) -> tuple[float, float, float]:
-    """Estima latência, jitter e BER usando modelos de fila e de enlace.
+    """Estima latência, jitter e BER usando modelos de fila e de carga.
 
     Para latência e jitter, usamos um modelo de fila M/M/1 por site.
     Cada site é tratado como um servidor com taxa de serviço proporcional à capacidade.
     A latência total considera o tempo de serviço médio e o tempo de fila.
 
-    Para BER, usamos uma fórmula de enlace digital baseada em BPSK/QPSK:
-    BER = 0.5 * erfc(sqrt(SNR)).
-    Esse é um modelo de referência mais científico do que uma curva arbitrária.
+    Para BER, o modelo atual não usa SNR físico nem valores de referência arbitrários.
+    Em vez disso, considera que a taxa de erro efetiva cresce com a carga do sistema,
+    refletindo retransmissões e degradação de qualidade quando o tráfego se aproxima da capacidade.
     """
     packet_size_bits = 12_000  # pacote médio de ~1.5 kB, usado para converter capacidade em taxa de serviço
     service_rate = tech_params["capacity_gbps"] * 1e9 / packet_size_bits
-    load = max(min(load_factor, 0.999), 0.01)
+    load = max(min(load_factor, 0.999), 0.01)  # evita divisão por zero e mantém o modelo M/M/1 estável
 
     # Tempo de serviço médio (segundos) por pacote.
     service_time = 1.0 / service_rate
@@ -90,13 +88,17 @@ def estimate_performance(load_factor: float, tech_params: dict) -> tuple[float, 
         latency_ms *= 1.0 + overload * 5.0
         jitter_ms *= 1.0 + overload * 3.0
 
-    # Modela BER pelo SNR efetivo do enlace: depende do desempenho físico e da carga.
-    ref_snr_db = tech_params.get("reference_snr_db", 20.0)
-    snr_db = ref_snr_db - 6.0 * load_factor
-    snr_linear = 10.0 ** (snr_db / 10.0)
-    ber = 0.5 * math.erfc(math.sqrt(snr_linear))
-
-    # Mantém a BER dentro de limites realistas.
+    # Modela BER diretamente como função do nível de carga.
+    # Em um sistema real, BER depende de SNR, modulação e codificação. Aqui usamos um
+    # modelo abstrato que reflete a ideia de que a taxa de erro efetiva sobe quando a
+    # rede fica congestionada e as retransmissões/interferências crescem.
+    #
+    # - 0.5: ponto de carga em que a degradação começa a aumentar.
+    # - 1.5: expoente usado para representar crescimento superlinear de BER
+    #        à medida que a carga se aproxima de capacidade máxima.
+    # - 40.0: fator de escala para que a BER relativa aumente de forma perceptível
+    #         ao passar do limiar de 50% de carga.
+    ber = tech_params["base_ber"] * (1 + 40.0 * max(0.0, load - 0.5) ** 1.5)
     ber = max(tech_params["base_ber"], min(ber, 1.0))
 
     return float(latency_ms), float(jitter_ms), float(ber)
